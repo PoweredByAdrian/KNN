@@ -1,0 +1,11 @@
+Package            Version
+------------------ ---------
+certifi            2025.1.31
+charset-normalizer 3.4.1
+dotenv             0.9.9
+idna               3.10
+pip                21.2.3
+python-dotenv      1.1.0
+requests           2.32.3
+setuptools         57.4.0
+urllib3            2.3.0
