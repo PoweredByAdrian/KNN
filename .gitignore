@@ -3,4 +3,6 @@ downloaded_images
 export.json
 filtered_export.json
 labels/
+images/
 .env
+tmp/

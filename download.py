@@ -46,12 +46,12 @@ filtered_labels = [task for task in labels if has_popis_u_obrazku(task)]
 with open("filtered_export.json", "w", encoding="utf-8") as f:
     json.dump(filtered_labels, f, indent=2,ensure_ascii=False)
 
-save_dir = "downloaded_images"
+save_dir = "dataset/images"
 os.makedirs(save_dir, exist_ok=True)
 
 
 base_url = "https://label-studio.semant.cz"
-for task in filtered_labels[:10]:
+for task in filtered_labels:
     # retriev path to image
     image_path = task.get("data", {}).get("image", "")
     if image_path.startswith("/data/local-files/"):

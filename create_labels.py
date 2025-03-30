@@ -4,8 +4,8 @@ import cv2
 
 labels_file="filtered_export.json"
 
-images_folder="downloaded_images"
-labels_folder="labels"
+images_folder="dataset/images"
+labels_folder="dataset/labels"
 
 with open(labels_file,"r",encoding="utf-8") as f:
     labels=json.load(f)
