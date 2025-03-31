@@ -9,7 +9,7 @@ labels_file="export.json"
 
 # token for autorization
 headers = {
-    "Authorization": f"Token {os.getenv('LABEL_STUDIO_TOKEN')}"
+    "Authorization": f"Token cc12c344a1ba2711efbc10bc96c62cc3884cd4e3"
 }
 
 if os.path.exists(labels_file):
