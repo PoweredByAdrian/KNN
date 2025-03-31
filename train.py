@@ -4,7 +4,7 @@ model = YOLO("yolov8n.pt")
 
 # Train the model
 results = model.train(
-    data="data.yaml",  # Path to the dataset config file
+    data="dataset/data.yaml",  # Path to the dataset config file
     epochs=50,                 # Number of training epochs
     imgsz=640,                 # Image size (resize to 640x640)
     batch=8,                    # Batch size (adjust for your GPU/CPU)

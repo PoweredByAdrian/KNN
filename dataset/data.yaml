@@ -1,4 +1,4 @@
-train: images
-val: images
+train: dataset/train/images
+val: dataset/val/images
 nc: 1  # Number of classes
 names: ["Popis u obrázku"]  # Class names
