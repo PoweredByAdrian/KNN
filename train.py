@@ -13,6 +13,4 @@ results = model.train(
     seed=42,
 )
 
-# Save the trained model
-model.save("yolov8m_trained.pt")
-
+# it is save automatically
