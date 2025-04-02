@@ -2,10 +2,10 @@ import json
 import os
 import cv2
 
-labels_file="filtered_export.json"
+labels_file="export.json"
 
-images_folder="dataset/images"
-labels_folder="dataset/labels"
+images_folder="datasets/dataset/images"
+labels_folder="datasets/dataset/labels"
 
 with open(labels_file,"r",encoding="utf-8") as f:
     labels=json.load(f)
@@ -48,3 +48,5 @@ for task in labels:
 
                     yolo_format = convert_to_yolo_format(data['x'],data['y'],data['width'],data['height'],width,height)
                     yolo_file.write(yolo_format+"\n")
+                else:
+                    pass

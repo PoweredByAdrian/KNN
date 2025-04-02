@@ -2,7 +2,7 @@ venv/
 downloaded_images
 export.json
 filtered_export.json
-labels/
-images/
+*/labels/
+*/images/
 .env
 tmp/

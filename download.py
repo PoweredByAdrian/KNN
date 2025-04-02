@@ -32,26 +32,15 @@ else:
     labels=response.json()
 
 
-# Filter function: Check if "Popis u obrázku" exists in any annotation
-def has_popis_u_obrazku(task):
-    for annotation in task.get("annotations", []):
-        for result in annotation.get("result", []):
-            if result.get("type") == "rectanglelabels" and "Popis u obrázku" in result.get("value", {}).get("rectanglelabels", []):
-                return True
-    return False
 
-# Apply the filter
-filtered_labels = [task for task in labels if has_popis_u_obrazku(task)]
-# Save the filtered data
-with open("filtered_export.json", "w", encoding="utf-8") as f:
-    json.dump(filtered_labels, f, indent=2,ensure_ascii=False)
 
-save_dir = "dataset/images"
+
+save_dir = "datasets/dataset/images"
 os.makedirs(save_dir, exist_ok=True)
 
 
 base_url = "https://label-studio.semant.cz"
-for task in filtered_labels:
+for task in labels:
     # retriev path to image
     image_path = task.get("data", {}).get("image", "")
     if image_path.startswith("/data/local-files/"):

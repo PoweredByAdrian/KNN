@@ -1,4 +1,6 @@
-train: dataset/train/images
-val: dataset/val/images
+path: dataset
 nc: 1  # Number of classes
 names: ["Popis u obrázku"]  # Class names
+train: train/images
+val: val/images
+test: test/images
