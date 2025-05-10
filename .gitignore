@@ -6,3 +6,7 @@ filtered_export.json
 */images/
 .env
 tmp/
+
+*/exported_images/
+*/jsons/
+*/texts/
