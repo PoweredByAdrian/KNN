@@ -10,3 +10,7 @@ tmp/
 */exported_images/
 */jsons/
 */texts/
+*.zip
+ukazka_page_xml.py
+
+*/__pycache__/
