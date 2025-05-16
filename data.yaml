@@ -1,6 +1,7 @@
-path: dataset
-nc: 1  # Number of classes
-names: ["Popis u obrázku"]  # Class names
+path: /scratch.ssd/xbahou00/job_10843683.pbs-m1/KNN/datasets/dataset
+nc: 2  # Number of classes
+names: ["Popis u obrázku","Obrázek"]  # Class names
 train: train/images
 val: val/images
 test: test/images
+
