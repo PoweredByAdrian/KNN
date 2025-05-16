@@ -347,17 +347,32 @@ def process_id(
         logging.info("Building context block around best match...")
 
         # Instead of just building context around the best match,
-        # build context around ALL blocks that exceed the threshold
+        # build context based on the selected approach (all above threshold or best only)
         above_threshold_blocks = []
         
-        # Find all blocks with similarity above threshold
-        for idx, similarity in enumerate(all_similarities):
-            if similarity > similarity_threshold:
-                above_threshold_blocks.append(idx)
-                
-        if above_threshold_blocks:
-            logging.info(f"Found {len(above_threshold_blocks)} blocks above threshold {similarity_threshold}")
+        # Find blocks to include based on chosen approach
+        if args.best_only:
+            # Only use the best match for this image (if it's above threshold)
+            best_idx = int(torch.tensor(all_similarities).argmax())
+            if all_similarities[best_idx] > similarity_threshold:
+                above_threshold_blocks = [best_idx]
+                logging.info(f"Using best match only (similarity: {all_similarities[best_idx]:.4f})")
+            else:
+                logging.warning(f"Best match similarity ({all_similarities[best_idx]:.4f}) below threshold ({similarity_threshold})")
+                images_below_threshold += 1
+        else:
+            # Use all blocks above threshold (original behavior)
+            for idx, similarity in enumerate(all_similarities):
+                if similarity > similarity_threshold:
+                    above_threshold_blocks.append(idx)
             
+            if above_threshold_blocks:
+                logging.info(f"Found {len(above_threshold_blocks)} blocks above threshold {similarity_threshold}")
+            else:
+                logging.warning(f"No blocks above threshold {similarity_threshold} found")
+                images_below_threshold += 1
+        
+        if above_threshold_blocks:
             # We'll reuse the blocks generated earlier
             blocks = doc.generate_blocks(lines_per_block=1, overlap=0)
             
@@ -399,15 +414,16 @@ def process_id(
                 # Add these context blocks to our collection
                 all_context_blocks.extend(context_blocks)
             
-            logging.info(f"Built context blocks around {len(above_threshold_blocks)} matches above threshold")
+            if args.best_only:
+                logging.info(f"Built context around best match with {len(all_context_blocks)} total blocks")
+            else:
+                logging.info(f"Built context blocks around {len(above_threshold_blocks)} matches above threshold")
+            
             logging.info(f"Total blocks added to context: {len(all_context_blocks)}")
             
             if args.verbose:
                 for idx in above_threshold_blocks:
                     logging.info(f"  Block {idx}: {all_similarities[idx]:.4f} - {blocks[idx].get_text()[:50]}...")
-        else:
-            logging.warning(f"No blocks above threshold {similarity_threshold} found")
-            images_below_threshold += 1
     
     # After processing all images, visualize all accumulated context blocks on the original image
     if all_context_blocks:
@@ -480,11 +496,13 @@ def main():
     parser.add_argument("--max-image-suffix", type=int, default=20, help="Maximum suffix for alternative images")
     parser.add_argument("--max-ids", type=int, default=0, help="Maximum number of IDs to process (0 for all)")
     parser.add_argument("--model-name", default="ViT-B/32", help="CLIP model to use")
-    parser.add_argument("--only-obrazek", action="store_true", help="Only process IDs with 'Obrázek' label")
+    parser.add_argument("--all", action="store_true", 
+                        help="Process all IDs, not just ones with 'Obrázek' label")
     parser.add_argument("--id", help="Process a single specific ID")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging")
     parser.add_argument("--verbose", action="store_true", help="Show more detailed output")
-    
+    parser.add_argument("--best-only", action="store_true", 
+                        help="Only use the best matching context for each image instead of all above threshold")
     args = parser.parse_args()
     
     # Set up logging
@@ -516,7 +534,7 @@ def main():
         # Process a single specific ID
         ids_to_process = [args.id]
         logging.info(f"Processing single ID: {args.id}")
-    elif args.only_obrazek:
+    elif not args.all:  # Now we check if NOT args.all (Obrazek is default)
         # Get IDs from JSON files with "Obrázek" label
         logging.info("Scanning for JSONs containing 'Obrázek' label...")
         ids_to_process = get_obrazek_json_ids(args.json_dir)
@@ -601,7 +619,7 @@ def main():
     logging.info(f"Average time per ID: {total_time / len(ids_to_process):.2f} seconds")
     
     # Write detailed results to a JSON file
-    results_file = "obrazek_results.json" if args.only_obrazek else "all_results.json"
+    results_file = "all_results.json" if args.all else "obrazek_results.json"
     with open(results_file, "w", encoding="utf-8") as f:
         json.dump({
             "summary": {
