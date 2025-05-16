@@ -98,8 +98,8 @@ def draw_blocks_on_image(
 
     Args:
         image_path: Path to the original image.
-        blocks: List of TextBlock objects to draw.
         output_path: Path to save the output image. If None, auto-generates.
+        blocks: List of TextBlock objects to draw.
         draw_lines: Whether to draw each line's polygon (in red).
 
     Returns:
@@ -119,8 +119,12 @@ def draw_blocks_on_image(
         draw.rectangle(bbox, outline="blue", width=2)
 
     if output_path is None:
-        block_ids = "_".join([str(block.id) for block in blocks])
-        filename = f"blocks_{block_ids}_bbox.png"
+        # Extract the base image name without extension
+        base_image_name = os.path.splitext(os.path.basename(image_path))[0]
+        
+        # Use the base image name with number of blocks instead of all IDs
+        filename = f"{base_image_name}_blocks_{len(blocks)}.png"
+        
         output_path = os.path.join(os.getcwd(), filename)
 
     image.save(output_path)

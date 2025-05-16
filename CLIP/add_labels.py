@@ -42,6 +42,12 @@ def draw_rectangle_labels(image_path, json_path, output_path):
         # Load the image
         logging.info(f"Loading image: {image_path}")
         img = Image.open(image_path)
+        
+        # Convert image to RGB mode if it's not already
+        if img.mode != 'RGB':
+            logging.info(f"Converting image from {img.mode} mode to RGB")
+            img = img.convert('RGB')
+            
         draw = ImageDraw.Draw(img)
         
         # Try to load a font, use default if not available
@@ -127,12 +133,12 @@ def draw_rectangle_labels(image_path, json_path, output_path):
                     
                     color = label_colors[label_text]
                     
-                    # Draw rectangle with increased width (4 pixels instead of 2)
-                    line_width = 5  # Increased from default 1 or 2
-                    
-                    # Draw multiple rectangles to create a thicker outline
-                    for i in range(line_width):
-                        draw.rectangle([x1-i, y1-i, x2+i, y2+i], outline=color)
+                    # Draw a single thick rectangle instead of multiple thin ones
+                    for i in range(5):  # Draw 5 concentric rectangles
+                        draw.rectangle(
+                            [max(0, x1-i), max(0, y1-i), min(img_width, x2+i), min(img_height, y2+i)], 
+                            outline=color
+                        )
                     
                     # Draw label background and text
                     text_size = draw.textbbox((0, 0), label_text, font=font)
@@ -141,9 +147,12 @@ def draw_rectangle_labels(image_path, json_path, output_path):
                     
                     # Draw larger background for text
                     padding = 4  # Padding around text
-                    draw.rectangle((x1-padding, y1-text_height-padding*2, 
-                                   x1+text_width+padding, y1), 
-                                   fill=color)
+                    draw.rectangle((
+                        max(0, x1-padding), 
+                        max(0, y1-text_height-padding*2), 
+                        min(img_width, x1+text_width+padding), 
+                        min(img_height, y1)
+                    ), fill=color)
                     
                     # Draw text
                     draw.text((x1, y1-text_height-padding), label_text, fill="white", font=font)

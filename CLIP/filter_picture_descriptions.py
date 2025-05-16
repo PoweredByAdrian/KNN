@@ -193,12 +193,16 @@ def main():
     
     print(f"Found {len(json_files)} JSON files and {len(xml_files)} XML files")
     
+    # Create output directory if it doesn't exist
+    output_dir = os.path.join(os.getcwd(), "filtered_texts")
+    os.makedirs(output_dir, exist_ok=True)
+    
     total_matches = 0
     total_json_regions = 0
     processed_files = 0
     matches_removed_count = 0
     
-    # Process each JSON file
+    # Process only JSON files with matching XML files
     for json_file in json_files:
         base_name = os.path.splitext(json_file)[0]
         matching_xml = next((x for x in xml_files if os.path.splitext(x)[0] == base_name), None)
@@ -214,6 +218,22 @@ def main():
         
         # Load data
         json_regions = load_json_annotation(json_path)
+        
+        # Even if no "Popis u obrázku" regions found, still copy the XML
+        if not json_regions:
+            print(f"  No 'Popis u obrázku' regions found in {json_file}")
+            print(f"  Copying XML file without filtering")
+            try:
+                tree = ET.parse(xml_path)
+                output_path = os.path.join(output_dir, f"filtered_{matching_xml}")
+                tree.write(output_path, encoding='utf-8', xml_declaration=True)
+                print(f"  Copied {matching_xml} to {output_path}")
+                processed_files += 1
+            except Exception as e:
+                print(f"  Error copying XML file {matching_xml}: {e}")
+            continue
+            
+        # Load XML regions
         xml_regions = load_xml_text_regions(xml_path)
         
         print(f"  Loaded {len(json_regions)} text regions from JSON file")
@@ -237,25 +257,35 @@ def main():
             
             total_matches += len(matches)
             total_json_regions += len(json_regions)
-
-            # Create output directory if it doesn't exist
-            output_dir = os.path.join(os.getcwd(), "filtered_texts")
-            os.makedirs(output_dir, exist_ok=True)
             
-            removed_count = remove_matched_regions_from_xml(matches, xml_path, output_filepath=os.path.join(output_dir, f"filtered_{matching_xml}"))
-            print(f"Filtered XML saved to {os.path.join(output_dir, f'filtered_{matching_xml}')}")
+            # Save filtered XML
+            output_path = os.path.join(output_dir, f"filtered_{matching_xml}")
+            removed_count = remove_matched_regions_from_xml(matches, xml_path, output_filepath=output_path)
+            print(f"  Filtered XML saved to {output_path}")
             matches_removed_count += removed_count
         else:
             print("  No matching text regions found")
+            print(f"  Copying XML file without filtering")
+            try:
+                tree = ET.parse(xml_path)
+                output_path = os.path.join(output_dir, f"filtered_{matching_xml}")
+                tree.write(output_path, encoding='utf-8', xml_declaration=True)
+                print(f"  Copied {matching_xml} to {output_path}")
+            except Exception as e:
+                print(f"  Error copying XML file {matching_xml}: {e}")
         
         processed_files += 1
     
-    total_match_percentage = total_matches / total_json_regions * 100
-    print(f"\nSummary: Processed {processed_files} file pairs, found {total_matches} total matching regions")
-    print(f"Total match percentage: {total_match_percentage:.2f}% ({total_matches}/{total_json_regions} regions matched)")
-    print(f"Total regions removed from XML: {matches_removed_count}")
+    # Print summary
+    if total_json_regions > 0:
+        total_match_percentage = total_matches / total_json_regions * 100
+        print(f"\nSummary: Processed {processed_files} file pairs, found {total_matches} total matching regions")
+        print(f"Total match percentage: {total_match_percentage:.2f}% ({total_matches}/{total_json_regions} regions matched)")
+        print(f"Total regions removed from XML: {matches_removed_count}")
+    else:
+        print(f"\nSummary: Processed {processed_files} file pairs, no matching regions found")
+    
     print("Finished processing all files.")
-    print("Exiting...")
-    print("Done.")
+
 if __name__ == "__main__":
     main()
