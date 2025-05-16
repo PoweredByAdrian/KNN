@@ -87,18 +87,18 @@ class OCRDocument:
         return blocks
 
 
-def draw_block_on_image(
+def draw_blocks_on_image(
     image_path: str,
-    block: TextBlock,
+    blocks: List[TextBlock],
     output_path: Union[str, None] = None,
     draw_lines: bool = True
 ) -> str:
     """
-    Draws a text block on an image and saves the result.
+    Draws multiple text blocks on an image and saves the result.
 
     Args:
         image_path: Path to the original image.
-        block: TextBlock object to draw.
+        blocks: List of TextBlock objects to draw.
         output_path: Path to save the output image. If None, auto-generates.
         draw_lines: Whether to draw each line's polygon (in red).
 
@@ -108,17 +108,19 @@ def draw_block_on_image(
     image = Image.open(image_path).convert("RGB")
     draw = ImageDraw.Draw(image)
 
-    # Optionally draw each line's polygon
-    if draw_lines:
-        for line in block.lines:
-            draw.polygon(line.polygon, outline="red", width=2)
+    for block in blocks:
+        # Optionally draw each line's polygon
+        if draw_lines:
+            for line in block.lines:
+                draw.polygon(line.polygon, outline="red", width=2)
 
-    # Always draw the block's bounding box (in blue)
-    bbox = block.bounding_box()
-    draw.rectangle(bbox, outline="blue", width=2)
+        # Always draw the block's bounding box (in blue)
+        bbox = block.bounding_box()
+        draw.rectangle(bbox, outline="blue", width=2)
 
     if output_path is None:
-        filename = f"block_{block.id}_bbox.png"
+        block_ids = "_".join([str(block.id) for block in blocks])
+        filename = f"blocks_{block_ids}_bbox.png"
         output_path = os.path.join(os.getcwd(), filename)
 
     image.save(output_path)
