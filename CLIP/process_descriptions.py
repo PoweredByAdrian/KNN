@@ -334,7 +334,7 @@ def process_id(
     
     # Construct paths
     base_image_path = os.path.join(images_dir, f"{id_value}.jpg")
-    xml_path = os.path.join(texts_dir, f"filtered_{id_value}.xml")
+    xml_path = os.path.join(texts_dir, f"{id_value}.xml")
     
     # Check if XML exists - moved to debug level
     if not os.path.exists(xml_path):

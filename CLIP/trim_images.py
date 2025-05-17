@@ -70,28 +70,38 @@ def setup_logging(debug_mode=False, use_notebook=False):
 
 def find_image_file(image_dir, base_uuid):
     """
-    Tries to find an image file matching the UUID with common extensions.
+    Tries to find an image file matching the exact UUID with common extensions.
     
     Args:
         image_dir: Directory containing images
-        base_uuid: The UUID to search for
+        base_uuid: The exact UUID to search for
         
     Returns:
         Path to the image file if found, None otherwise
     """
-    base_uuid_lower = base_uuid.lower()
+    # Search for exact UUID match with allowed extensions
     for ext in ALLOWED_IMAGE_EXTENSIONS:
-        filename = f"{base_uuid_lower}{ext}"
+        # Check standard case: UUID.ext (exactly as provided)
+        filename = f"{base_uuid}{ext}"
         filepath = os.path.join(image_dir, filename)
         if os.path.isfile(filepath):
             logging.debug(f"Found matching image file: {filepath}")
             return filepath
-        # Check uppercase extension just in case
-        filename_upper = f"{base_uuid_lower}{ext.upper()}"
+        
+        # Also check uppercase extension as a fallback
+        filename_upper = f"{base_uuid}{ext.upper()}"
         filepath_upper = os.path.join(image_dir, filename_upper)
         if os.path.isfile(filepath_upper):
             logging.debug(f"Found matching image file (uppercase ext): {filepath_upper}")
             return filepath_upper
+
+    # Debug: List a few files in the directory to help diagnose issues
+    try:
+        files_in_dir = os.listdir(image_dir)
+        sample_files = files_in_dir[:5] if files_in_dir else []
+        logging.debug(f"Directory '{image_dir}' contains {len(files_in_dir)} files. Sample: {sample_files}")
+    except Exception as e:
+        logging.debug(f"Error listing directory contents: {e}")
 
     logging.warning(f"Could not find image file for UUID '{base_uuid}' in directory '{image_dir}' with extensions {ALLOWED_IMAGE_EXTENSIONS}")
     return None
