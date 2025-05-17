@@ -11,17 +11,20 @@ from typing import Optional, Tuple, List, Dict, Any
 import sys
 import shutil
 from tqdm import tqdm
+import numpy as np
 
 import torch
 import torch.nn.functional as F
 from PIL import Image
 
 # --- Configuration ---
-SCRIPT_VERSION = "1.1"
+SCRIPT_VERSION = "1.2"  # Updated version number
 DEFAULT_JSON_DIR = "jsons"
 DEFAULT_IMAGES_DIR = "exported_images"
 DEFAULT_TEXTS_DIR = "filtered_texts"
 DEFAULT_OUTPUT_DIR = "output_context"
+DEFAULT_OUTPUT_JSONS_DIR = "output_jsons"  # New default directory for JSON outputs
+DEFAULT_ORIGINAL_IMAGES_DIR = "downloaded_images"
 DEFAULT_SIMILARITY_THRESHOLD = 0.25
 DEFAULT_MAX_LINES_CONTEXT = 3
 DEFAULT_MAX_IMAGE_SUFFIX = 20
@@ -42,6 +45,24 @@ except ImportError as e:
     print(f"Error importing required modules: {e}")
     print("Please ensure clip and cut_text modules are installed/available")
     sys.exit(1)
+
+# Add this function near the top of the file with other utility functions
+def json_serializable(obj):
+    """
+    Convert objects that aren't natively JSON serializable.
+    Handles numpy types like int64, float32, etc.
+    """
+    if isinstance(obj, (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64, 
+                         np.uint8, np.uint16, np.uint32, np.uint64)):
+        return int(obj)
+    elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
+        return float(obj)
+    elif isinstance(obj, (np.bool_)):
+        return bool(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    else:
+        return obj
 
 # --- Logging Setup ---
 def setup_logging(debug_mode=False, use_notebook=False, log_to_file=True):
@@ -315,7 +336,9 @@ def process_id(
     preprocess,
     images_dir: str = DEFAULT_IMAGES_DIR,
     texts_dir: str = DEFAULT_TEXTS_DIR,
+    original_images_dir: str = DEFAULT_ORIGINAL_IMAGES_DIR,
     output_dir: str = DEFAULT_OUTPUT_DIR,
+    output_jsons_dir: str = DEFAULT_OUTPUT_JSONS_DIR,  # Added parameter
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     max_lines_context: int = DEFAULT_MAX_LINES_CONTEXT,
     max_image_suffix: int = DEFAULT_MAX_IMAGE_SUFFIX,
@@ -325,6 +348,22 @@ def process_id(
 ) -> Dict[str, Any]:
     """
     Process a single ID with the pre-loaded CLIP model.
+    
+    Args:
+        id_value: The ID to process
+        model: Pre-loaded CLIP model
+        preprocess: CLIP preprocessing function
+        images_dir: Directory containing cropped/processed images
+        texts_dir: Directory containing filtered XML texts
+        original_images_dir: Directory containing original uncropped images
+        output_dir: Directory to save output visualization
+        output_jsons_dir: Directory to save individual JSON results
+        similarity_threshold: Minimum similarity to consider for matches
+        max_lines_context: Number of lines to include above/below matches
+        max_image_suffix: Maximum suffix to check for image variants
+        device: Device to use (cuda or cpu)
+        best_only: Whether to use only the best match
+        verbose: Enable more detailed output
     """
     start_time = time.time()
     
@@ -365,11 +404,29 @@ def process_id(
     # Store all context blocks from all images
     all_context_blocks = []
     
+    # Store detailed block information for JSON output
+    json_data = {
+        "id": id_value,
+        "process_time": None,
+        "images": {}
+    }
+    
     # Process each image
     for idx, image_path in enumerate(available_images):
         # Reduced to debug level
         logging.debug(f"Processing image {idx+1}/{len(available_images)}: {image_path}")
         images_processed += 1
+        
+        # Extract the image filename for JSON keys
+        image_filename = os.path.basename(image_path)
+        image_id_with_suffix = os.path.splitext(image_filename)[0]  # Remove extension
+        
+        # Initialize image data in JSON
+        json_data["images"][image_id_with_suffix] = {
+            "image_path": image_path,
+            "best_similarity": None,
+            "blocks": []
+        }
         
         # Find best matching block for this image
         result = find_best_matching_block(
@@ -382,14 +439,15 @@ def process_id(
 
         if result is None:
             logging.warning(f"Skipping image {image_path} due to error")
+            json_data["images"][image_id_with_suffix]["error"] = "Processing error"
             continue
-
-        # Extract the actual image ID from the found image path
-        image_filename = os.path.basename(image_path)
-        image_id_with_suffix = os.path.splitext(image_filename)[0]  # Remove extension
         
         # Now the result contains best_block, best_similarity, all_similarities, _, doc
         best_block, best_similarity, all_similarities, _, doc = result
+        
+        # Store best similarity in JSON data
+        json_data["images"][image_id_with_suffix]["best_similarity"] = float(best_similarity)
+        
         # Moved to debug level
         logging.debug(f"Matched block with {best_similarity:.4f} cosine similarity: \"{best_block.get_text()[:100]}...\"")
 
@@ -439,6 +497,15 @@ def process_id(
                 all_added_blocks.add(block_idx)
                 context_text = blocks[block_idx].get_text()
                 
+                # Initialize block data for JSON output
+                block_data = {
+                    "index": block_idx,
+                    "similarity": float(all_similarities[block_idx]),
+                    "text": blocks[block_idx].get_text(),
+                    "bounding_box": blocks[block_idx].bounding_box(),  # [min_x, min_y, max_x, max_y]
+                    "context_blocks": []
+                }
+                
                 # Add blocks above if they meet similarity threshold
                 for i in range(1, max_lines_context + 1):
                     check_idx = block_idx - i
@@ -447,6 +514,15 @@ def process_id(
                             context_blocks.insert(0, blocks[check_idx])
                             all_added_blocks.add(check_idx)
                             context_text = blocks[check_idx].get_text() + "\n" + context_text
+                            
+                            # Add to JSON data
+                            block_data["context_blocks"].append({
+                                "index": check_idx,
+                                "position": "above",
+                                "similarity": float(all_similarities[check_idx]),
+                                "text": blocks[check_idx].get_text(),
+                                "bounding_box": blocks[check_idx].bounding_box()
+                            })
                     else:
                         break
                 
@@ -458,8 +534,20 @@ def process_id(
                             context_blocks.append(blocks[check_idx])
                             all_added_blocks.add(check_idx)
                             context_text += "\n" + blocks[check_idx].get_text()
+                            
+                            # Add to JSON data
+                            block_data["context_blocks"].append({
+                                "index": check_idx,
+                                "position": "below",
+                                "similarity": float(all_similarities[check_idx]),
+                                "text": blocks[check_idx].get_text(),
+                                "bounding_box": blocks[check_idx].bounding_box()
+                            })
                     else:
                         break
+                
+                # Add this block's data to the JSON output
+                json_data["images"][image_id_with_suffix]["blocks"].append(block_data)
                 
                 # Add these context blocks to our collection
                 all_context_blocks.extend(context_blocks)
@@ -476,17 +564,23 @@ def process_id(
                     logging.debug(f"  Block {idx}: {all_similarities[idx]:.4f} - {blocks[idx].get_text()[:50]}...")
     
     # After processing all images, visualize all accumulated context blocks on the original image
+    output_file = None
+    
     if all_context_blocks:
         # Get original image path (use the ID without any suffix)
-        original_image_path = os.path.join("images", f"{id_value}.jpg")
+        original_image_path = os.path.join(original_images_dir, f"{id_value}.jpg")
         
         # If original image doesn't exist, use the first available image we found earlier
         if not os.path.exists(original_image_path):
             original_image_path = available_images[0]
-            logging.debug(f"Original image not found at {original_image_path}, using {available_images[0]} instead") # Changed to debug
+            logging.debug(f"Original image not found at {original_image_path}, using {available_images[0]} instead")
         
-        # Create output directory if it doesn't exist
+        # Create output directories if they don't exist
         os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(output_jsons_dir, exist_ok=True)
+        
+        # Store original image path in JSON data
+        json_data["original_image_path"] = original_image_path
         
         # Visualize all context blocks on the image
         try:
@@ -505,41 +599,58 @@ def process_id(
                 # Clean up original if it's not the final destination
                 if context_image != output_path and os.path.exists(context_image):
                     os.remove(context_image)
-                
-                processing_time = time.time() - start_time
-                return {
-                    "id": id_value,
-                    "success": True,
-                    "context_blocks": len(all_context_blocks),
-                    "images_processed": images_processed,
-                    "images_below_threshold": images_below_threshold,
-                    "output_file": output_file,
-                    "time": processing_time
-                }
         except Exception as e:
             logging.error(f"Error visualizing combined context blocks: {e}")
-            return {
-                "id": id_value,
-                "success": False,
-                "error": f"Error visualizing context: {str(e)}",
-                "time": time.time() - start_time
-            }
+            json_data["error"] = f"Error visualizing: {str(e)}"
     else:
         logging.warning(f"No context blocks found for ID {id_value}")  # Keep warning but simplified
+        json_data["error"] = "No context blocks found"
+    
+    # Add final processing details to JSON data
+    processing_time = time.time() - start_time
+    json_data["process_time"] = processing_time
+    json_data["context_blocks_count"] = len(all_context_blocks)
+    json_data["output_image"] = output_file
+    
+    # Save individual JSON file with detailed information
+    json_output_path = os.path.join(output_jsons_dir, f"{id_value}_results.json")
+    try:
+        with open(json_output_path, "w", encoding="utf-8") as f:
+            json.dump(json_data, f, indent=2, default=json_serializable)
+        logging.debug(f"JSON details saved to {json_output_path}")
+    except Exception as e:
+        logging.error(f"Error saving JSON details for {id_value}: {e}")
+    
+    # Return the processing result for the overall summary
+    if all_context_blocks:
+        return {
+            "id": id_value,
+            "success": True,
+            "context_blocks": len(all_context_blocks),
+            "images_processed": images_processed,
+            "images_below_threshold": images_below_threshold,
+            "output_file": output_file,
+            "json_file": os.path.basename(json_output_path),
+            "time": processing_time
+        }
+    else:
         return {
             "id": id_value,
             "success": False,
-            "error": "No context blocks found",
+            "error": json_data.get("error", "No context blocks found"),
             "images_processed": images_processed,
             "images_below_threshold": images_below_threshold,
-            "time": time.time() - start_time
+            "json_file": os.path.basename(json_output_path),
+            "time": processing_time
         }
 
 def run_process_descriptions(
     json_dir: str = DEFAULT_JSON_DIR,
     images_dir: str = DEFAULT_IMAGES_DIR, 
     texts_dir: str = DEFAULT_TEXTS_DIR,
+    original_images_dir: str = DEFAULT_ORIGINAL_IMAGES_DIR,
     output_dir: str = DEFAULT_OUTPUT_DIR,
+    output_jsons_dir: str = DEFAULT_OUTPUT_JSONS_DIR,  # Added parameter
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     max_lines_context: int = DEFAULT_MAX_LINES_CONTEXT,
     max_image_suffix: int = DEFAULT_MAX_IMAGE_SUFFIX,
@@ -555,8 +666,9 @@ def run_process_descriptions(
     Main function to process descriptions using CLIP model.
     Can be called programmatically from other modules.
     """
-    # Create output directory if it doesn't exist
+    # Create output directories if they don't exist
     os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(output_jsons_dir, exist_ok=True)
     
     # Initialize CLIP model - ONLY ONCE!
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -700,10 +812,12 @@ def run_process_descriptions(
             device=device,
             images_dir=images_dir,
             texts_dir=texts_dir,
+            original_images_dir=original_images_dir,
+            output_dir=output_dir,
+            output_jsons_dir=output_jsons_dir,  # Pass the new parameter
             similarity_threshold=similarity_threshold,
             max_lines_context=max_lines_context,
             max_image_suffix=max_image_suffix,
-            output_dir=output_dir,
             best_only=best_only,
             verbose=verbose
         )
@@ -759,7 +873,9 @@ def run_process_descriptions(
             "similarity_threshold": similarity_threshold,
             "max_lines_context": max_lines_context,
             "process_all": process_all,
-            "best_only": best_only
+            "best_only": best_only,
+            "output_dir": output_dir,
+            "output_jsons_dir": output_jsons_dir
         },
         "details": results
     }
@@ -768,8 +884,8 @@ def run_process_descriptions(
     results_file = os.path.join(output_dir, "processing_results.json")
     try:
         with open(results_file, "w", encoding="utf-8") as f:
-            json.dump(return_results, f, indent=2)
-        logging.debug(f"Detailed results saved to {results_file}")  # Changed to debug
+            json.dump(return_results, f, indent=2, default=json_serializable)  # Add the default parameter
+        logging.debug(f"Detailed results saved to {results_file}")
     except Exception as e:
         logging.error(f"Error saving results to JSON: {e}")
     
@@ -783,9 +899,14 @@ def main():
     )
     parser.add_argument("--json-dir", default=DEFAULT_JSON_DIR, help="Directory containing JSON files")
     parser.add_argument("--images-dir", default=DEFAULT_IMAGES_DIR, help="Directory containing exported images")
+    parser.add_argument("--original-images-dir", default=DEFAULT_ORIGINAL_IMAGES_DIR, 
+                        help="Directory containing original uncropped images")
     parser.add_argument("--texts-dir", default=DEFAULT_TEXTS_DIR, help="Directory containing filtered XML texts")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory to store output context images")
-    parser.add_argument("--similarity-threshold", type=float, default=DEFAULT_SIMILARITY_THRESHOLD, help="Similarity threshold for context building")
+    parser.add_argument("--output-jsons-dir", default=DEFAULT_OUTPUT_JSONS_DIR, 
+                        help="Directory to store individual JSON result files")
+    parser.add_argument("--similarity-threshold", type=float, default=DEFAULT_SIMILARITY_THRESHOLD, 
+                        help="Similarity threshold for context building")
     parser.add_argument("--max-lines-context", type=int, default=DEFAULT_MAX_LINES_CONTEXT, help="Maximum lines to check above and below")
     parser.add_argument("--max-image-suffix", type=int, default=DEFAULT_MAX_IMAGE_SUFFIX, help="Maximum suffix for alternative images")
     parser.add_argument("--max-ids", type=int, default=0, help="Maximum number of IDs to process (0 for all)")
@@ -804,12 +925,14 @@ def main():
     # Set up logging for command-line use
     setup_logging(args.debug, use_notebook=False, log_to_file=not args.no_log_file)
     
-    # Run the main processing function
+    # Run the main processing function with new parameter
     result = run_process_descriptions(
         json_dir=args.json_dir,
         images_dir=args.images_dir,
         texts_dir=args.texts_dir,
+        original_images_dir=args.original_images_dir,
         output_dir=args.output_dir,
+        output_jsons_dir=args.output_jsons_dir,  # Pass the new parameter
         similarity_threshold=args.similarity_threshold,
         max_lines_context=args.max_lines_context,
         max_image_suffix=args.max_image_suffix,
