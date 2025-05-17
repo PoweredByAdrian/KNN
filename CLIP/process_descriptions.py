@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# filepath: /home/adrian/school/KNN/CLIP/process_descriptions.py
+# -*- coding: utf-8 -*-
 
 import os
 import argparse
@@ -7,7 +7,7 @@ import json
 import logging
 import re
 import time
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, Tuple, List, Dict, Any
 import sys
 import shutil
 from tqdm import tqdm
@@ -16,7 +16,25 @@ import torch
 import torch.nn.functional as F
 from PIL import Image
 
-# Import these modules - make sure they're available in your environment
+# --- Configuration ---
+SCRIPT_VERSION = "1.1"
+DEFAULT_JSON_DIR = "jsons"
+DEFAULT_IMAGES_DIR = "exported_images"
+DEFAULT_TEXTS_DIR = "filtered_texts"
+DEFAULT_OUTPUT_DIR = "output_context"
+DEFAULT_SIMILARITY_THRESHOLD = 0.25
+DEFAULT_MAX_LINES_CONTEXT = 3
+DEFAULT_MAX_IMAGE_SUFFIX = 20
+DEFAULT_MODEL_NAME = "ViT-B/32"
+
+# Constants
+UUID_PATTERN = r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+TARGET_LABEL = "Obrázek"
+
+# Track if logging has been set up
+_logging_setup_done = False
+
+# Try importing CLIP and other required modules
 try:
     import clip
     from cut_text import OCRDocument, TextBlock, draw_blocks_on_image
@@ -25,43 +43,53 @@ except ImportError as e:
     print("Please ensure clip and cut_text modules are installed/available")
     sys.exit(1)
 
-# Constants
-UUID_PATTERN = r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
-TARGET_LABEL = "Obrázek"
-
-def setup_logging(debug_mode=False):
-    """Configure logging format and level."""
+# --- Logging Setup ---
+def setup_logging(debug_mode=False, use_notebook=False, log_to_file=True):
+    """
+    Configure logging format and level.
+    
+    Args:
+        debug_mode: Enable debug logging
+        use_notebook: Set to True when running in a Jupyter notebook
+        log_to_file: Whether to also log to a file
+    """
+    global _logging_setup_done
+    
     log_level = logging.DEBUG if debug_mode else logging.INFO
-    log_format = '%(asctime)s - %(levelname)s - %(message)s'
     
-    # Clear any existing handlers (important for multiple runs)
-    for handler in logging.root.handlers[:]:
-        logging.root.removeHandler(handler)
+    # Configure log format based on environment
+    if use_notebook:
+        # Simpler format for notebooks with no timestamps
+        log_format = '%(levelname)s: %(message)s'
+    else:
+        # More detailed format for scripts
+        log_format = '%(asctime)s - %(levelname)s - %(message)s'
     
-    # Set up file logging
-    logging.basicConfig(
-        level=log_level,
-        format=log_format,
-        datefmt='%Y-%m-%d %H:%M:%S',
-        filename='process_descriptions.log',
-        filemode='w'
-    )
+    # If logging is already configured, reset handlers
+    if _logging_setup_done:
+        root_logger = logging.getLogger()
+        for handler in root_logger.handlers[:]:
+            root_logger.removeHandler(handler)
     
-    # Add console handler with colored output for better visibility
+    # Create a logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(log_level)
+    
+    # Console handler
     console = logging.StreamHandler()
     console.setLevel(log_level)
     
-    # Use a more visible format for console
-    if sys.stdout.isatty():  # Check if running in terminal that supports colors
+    # Use a more visible format for console in terminals that support colors
+    if sys.stdout.isatty() and not use_notebook:
         # Colors for different log levels
         class ColorFormatter(logging.Formatter):
             COLORS = {
-                'DEBUG': '\033[94m',  # Blue
-                'INFO': '\033[92m',   # Green
-                'WARNING': '\033[93m', # Yellow
-                'ERROR': '\033[91m',  # Red
+                'DEBUG': '\033[94m',    # Blue
+                'INFO': '\033[92m',     # Green
+                'WARNING': '\033[93m',  # Yellow
+                'ERROR': '\033[91m',    # Red
                 'CRITICAL': '\033[41m', # Red background
-                'ENDC': '\033[0m'     # Reset color
+                'ENDC': '\033[0m'       # Reset color
             }
             
             def format(self, record):
@@ -76,10 +104,27 @@ def setup_logging(debug_mode=False):
         formatter = logging.Formatter(log_format)
     
     console.setFormatter(formatter)
-    logging.getLogger('').addHandler(console)
+    root_logger.addHandler(console)
     
-    # Test that logging is working
-    logging.info("Logging system initialized")
+    # File handler (optional)
+    if log_to_file and not use_notebook:
+        try:
+            file_handler = logging.FileHandler('process_descriptions.log', mode='w')
+            file_handler.setLevel(log_level)
+            file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levellevel)s - %(message)s'))
+            root_logger.addHandler(file_handler)
+            logging.info("File logging enabled to process_descriptions.log")
+        except Exception as e:
+            logging.warning(f"Could not set up file logging: {e}")
+    
+    # Set flag that logging has been configured
+    _logging_setup_done = True
+    
+    if debug_mode:
+        logging.debug("DEBUG logging enabled.")
+    else:
+        logging.info("INFO logging enabled - use debug=True for more details")
+# --- End Logging Setup ---
 
 def has_obrazek_label(json_filepath):
     """Check if the JSON file contains 'Obrázek' label."""
@@ -267,18 +312,20 @@ def find_best_matching_block(
 def process_id(
     id_value: str, 
     model, 
-    preprocess, 
-    device: str,
-    args,  # Add this parameter
-    images_dir: str = "exported_images",
-    texts_dir: str = "filtered_texts",
-    similarity_threshold: float = 0.25,
-    max_lines_context: int = 3,
-    max_image_suffix: int = 10,
-    output_dir: str = "output_context"
-) -> Dict:
-    """Process a single ID with the pre-loaded CLIP model."""
-    
+    preprocess,
+    images_dir: str = DEFAULT_IMAGES_DIR,
+    texts_dir: str = DEFAULT_TEXTS_DIR,
+    output_dir: str = DEFAULT_OUTPUT_DIR,
+    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+    max_lines_context: int = DEFAULT_MAX_LINES_CONTEXT,
+    max_image_suffix: int = DEFAULT_MAX_IMAGE_SUFFIX,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    best_only: bool = False,
+    verbose: bool = False
+) -> Dict[str, Any]:
+    """
+    Process a single ID with the pre-loaded CLIP model.
+    """
     start_time = time.time()
     
     # Track statistics
@@ -289,7 +336,7 @@ def process_id(
     base_image_path = os.path.join(images_dir, f"{id_value}.jpg")
     xml_path = os.path.join(texts_dir, f"filtered_{id_value}.xml")
     
-    # Check if XML exists
+    # Check if XML exists - moved to debug level
     if not os.path.exists(xml_path):
         logging.error(f"XML file not found: {xml_path}")
         return {
@@ -310,7 +357,8 @@ def process_id(
             "time": time.time() - start_time
         }
 
-    logging.info(f"Processing ID: {id_value}")
+    # Reduced verbosity - moved to debug level
+    logging.debug(f"Processing ID: {id_value}")
     logging.debug(f"XML path: {xml_path}")
     logging.debug(f"Found {len(available_images)} images")
     
@@ -319,7 +367,8 @@ def process_id(
     
     # Process each image
     for idx, image_path in enumerate(available_images):
-        logging.info(f"Processing image {idx+1}/{len(available_images)}: {image_path}")
+        # Reduced to debug level
+        logging.debug(f"Processing image {idx+1}/{len(available_images)}: {image_path}")
         images_processed += 1
         
         # Find best matching block for this image
@@ -341,24 +390,25 @@ def process_id(
         
         # Now the result contains best_block, best_similarity, all_similarities, _, doc
         best_block, best_similarity, all_similarities, _, doc = result
-        logging.info(f"Matched block with {best_similarity:.4f} cosine similarity: \"{best_block.get_text()[:100]}...\"")
+        # Moved to debug level
+        logging.debug(f"Matched block with {best_similarity:.4f} cosine similarity: \"{best_block.get_text()[:100]}...\"")
 
         # Build contextual block around the best matching text
-        logging.info("Building context block around best match...")
+        logging.debug("Building context block around best match...")  # Changed to debug
 
         # Instead of just building context around the best match,
         # build context based on the selected approach (all above threshold or best only)
         above_threshold_blocks = []
         
         # Find blocks to include based on chosen approach
-        if args.best_only:
+        if best_only:
             # Only use the best match for this image (if it's above threshold)
             best_idx = int(torch.tensor(all_similarities).argmax())
             if all_similarities[best_idx] > similarity_threshold:
                 above_threshold_blocks = [best_idx]
-                logging.info(f"Using best match only (similarity: {all_similarities[best_idx]:.4f})")
+                logging.debug(f"Using best match only (similarity: {all_similarities[best_idx]:.4f})") # Changed to debug
             else:
-                logging.warning(f"Best match similarity ({all_similarities[best_idx]:.4f}) below threshold ({similarity_threshold})")
+                logging.debug(f"Best match similarity ({all_similarities[best_idx]:.4f}) below threshold ({similarity_threshold})") # Changed to debug
                 images_below_threshold += 1
         else:
             # Use all blocks above threshold (original behavior)
@@ -367,9 +417,9 @@ def process_id(
                     above_threshold_blocks.append(idx)
             
             if above_threshold_blocks:
-                logging.info(f"Found {len(above_threshold_blocks)} blocks above threshold {similarity_threshold}")
+                logging.debug(f"Found {len(above_threshold_blocks)} blocks above threshold {similarity_threshold}") # Changed to debug
             else:
-                logging.warning(f"No blocks above threshold {similarity_threshold} found")
+                logging.debug(f"No blocks above threshold {similarity_threshold} found") # Changed to debug
                 images_below_threshold += 1
         
         if above_threshold_blocks:
@@ -414,16 +464,16 @@ def process_id(
                 # Add these context blocks to our collection
                 all_context_blocks.extend(context_blocks)
             
-            if args.best_only:
-                logging.info(f"Built context around best match with {len(all_context_blocks)} total blocks")
+            if best_only:
+                logging.debug(f"Built context around best match with {len(all_context_blocks)} total blocks") # Changed to debug
             else:
-                logging.info(f"Built context blocks around {len(above_threshold_blocks)} matches above threshold")
+                logging.debug(f"Built context blocks around {len(above_threshold_blocks)} matches above threshold") # Changed to debug
             
-            logging.info(f"Total blocks added to context: {len(all_context_blocks)}")
+            logging.debug(f"Total blocks added to context: {len(all_context_blocks)}") # Changed to debug
             
-            if args.verbose:
+            if verbose and logging.getLogger().level <= logging.DEBUG:  # Only show details if we're in debug mode
                 for idx in above_threshold_blocks:
-                    logging.info(f"  Block {idx}: {all_similarities[idx]:.4f} - {blocks[idx].get_text()[:50]}...")
+                    logging.debug(f"  Block {idx}: {all_similarities[idx]:.4f} - {blocks[idx].get_text()[:50]}...")
     
     # After processing all images, visualize all accumulated context blocks on the original image
     if all_context_blocks:
@@ -433,7 +483,7 @@ def process_id(
         # If original image doesn't exist, use the first available image we found earlier
         if not os.path.exists(original_image_path):
             original_image_path = available_images[0]
-            logging.info(f"Original image not found at {original_image_path}, using {available_images[0]} instead")
+            logging.debug(f"Original image not found at {original_image_path}, using {available_images[0]} instead") # Changed to debug
         
         # Create output directory if it doesn't exist
         os.makedirs(output_dir, exist_ok=True)
@@ -450,7 +500,7 @@ def process_id(
             # Copy or move the generated image to the output directory
             if os.path.exists(context_image):
                 shutil.copy(context_image, output_path)
-                logging.info(f"All context blocks visualization saved to '{output_path}'")
+                logging.info(f"✓ Context visualization saved: {output_file}")  # Keep this as INFO but formatted better
                 
                 # Clean up original if it's not the final destination
                 if context_image != output_path and os.path.exists(context_image):
@@ -475,7 +525,7 @@ def process_id(
                 "time": time.time() - start_time
             }
     else:
-        logging.warning(f"No context blocks were found across any images for ID {id_value}")
+        logging.warning(f"No context blocks found for ID {id_value}")  # Keep warning but simplified
         return {
             "id": id_value,
             "success": False,
@@ -485,84 +535,121 @@ def process_id(
             "time": time.time() - start_time
         }
 
-def main():
-    parser = argparse.ArgumentParser(description="Process images with CLIP to find matching text descriptions")
-    parser.add_argument("--json-dir", default="jsons", help="Directory containing JSON files")
-    parser.add_argument("--images-dir", default="exported_images", help="Directory containing exported images")
-    parser.add_argument("--texts-dir", default="filtered_texts", help="Directory containing filtered XML texts")
-    parser.add_argument("--output-dir", default="output_context", help="Directory to store output context images")
-    parser.add_argument("--similarity-threshold", type=float, default=0.25, help="Similarity threshold for context building")
-    parser.add_argument("--max-lines-context", type=int, default=3, help="Maximum lines to check above and below")
-    parser.add_argument("--max-image-suffix", type=int, default=20, help="Maximum suffix for alternative images")
-    parser.add_argument("--max-ids", type=int, default=0, help="Maximum number of IDs to process (0 for all)")
-    parser.add_argument("--model-name", default="ViT-B/32", help="CLIP model to use")
-    parser.add_argument("--all", action="store_true", 
-                        help="Process all IDs, not just ones with 'Obrázek' label")
-    parser.add_argument("--id", help="Process a single specific ID")
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    parser.add_argument("--verbose", action="store_true", help="Show more detailed output")
-    parser.add_argument("--best-only", action="store_true", 
-                        help="Only use the best matching context for each image instead of all above threshold")
-    args = parser.parse_args()
-    
-    # Set up logging
-    setup_logging(args.debug)
-    
+def run_process_descriptions(
+    json_dir: str = DEFAULT_JSON_DIR,
+    images_dir: str = DEFAULT_IMAGES_DIR, 
+    texts_dir: str = DEFAULT_TEXTS_DIR,
+    output_dir: str = DEFAULT_OUTPUT_DIR,
+    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+    max_lines_context: int = DEFAULT_MAX_LINES_CONTEXT,
+    max_image_suffix: int = DEFAULT_MAX_IMAGE_SUFFIX,
+    max_ids: int = 0,
+    model_name: str = DEFAULT_MODEL_NAME,
+    process_all: bool = False,
+    specific_id: str = None,
+    best_only: bool = False,
+    verbose: bool = False,
+    show_progress: bool = True
+) -> Dict[str, Any]:
+    """
+    Main function to process descriptions using CLIP model.
+    Can be called programmatically from other modules.
+    """
     # Create output directory if it doesn't exist
-    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
     
     # Initialize CLIP model - ONLY ONCE!
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logging.info(f"Using device: {device}")
     
     try:
-        logging.info(f"Loading CLIP model: {args.model_name}")
+        logging.info(f"Loading CLIP model: {model_name}")
         model_load_start = time.time()
-        model, preprocess = clip.load(args.model_name, device=device)
+        model, preprocess = clip.load(model_name, device=device)
         model_load_time = time.time() - model_load_start
         logging.info(f"Model loaded in {model_load_time:.2f} seconds")
     except Exception as e:
-        logging.error(f"Error loading CLIP model: {e}")
-        return 1
+        error_msg = f"Error loading CLIP model: {e}"
+        logging.error(error_msg)
+        return {"error": error_msg}
     
-    print(f"\n{'='*60}\nStarting processing with {args.model_name} model\n{'='*60}")
+    logging.info(f"Starting processing with {model_name} model")
     
     # Determine which IDs to process
     ids_to_process = []
     
-    if args.id:
+    if specific_id:
         # Process a single specific ID
-        ids_to_process = [args.id]
-        logging.info(f"Processing single ID: {args.id}")
-    elif not args.all:  # Now we check if NOT args.all (Obrazek is default)
+        ids_to_process = [specific_id]
+        logging.debug(f"Processing single ID: {specific_id}")  # Changed to debug
+    elif not process_all:  # Now we check if NOT process_all (Obrazek is default)
         # Get IDs from JSON files with "Obrázek" label
-        logging.info("Scanning for JSONs containing 'Obrázek' label...")
-        ids_to_process = get_obrazek_json_ids(args.json_dir)
+        logging.info("Scanning for JSONs with 'Obrázek' label...")
+        
+        # Set up progress tracking for JSON scanning
+        json_files = [f for f in os.listdir(json_dir) if f.lower().endswith('.json')]
+        
+        if show_progress:
+            try:
+                # Try notebook tqdm first, fall back to regular tqdm
+                try:
+                    from tqdm.notebook import tqdm as notebook_tqdm
+                    json_iterator = notebook_tqdm(json_files, desc="Checking JSONs for Obrázek label")
+                    logging.debug("Using tqdm.notebook for JSON scanning progress")
+                except ImportError:
+                    # Fall back to regular tqdm
+                    json_iterator = tqdm(json_files, desc="Checking JSONs for Obrázek label")
+                    logging.debug("Using regular tqdm for JSON scanning progress")
+            except ImportError:
+                # If all fails, use regular list
+                json_iterator = json_files
+                logging.warning("tqdm not available, progress bars disabled")
+        else:
+            json_iterator = json_files
+            
+        for filename in json_iterator:
+            json_filepath = os.path.join(json_dir, filename)
+            
+            if has_obrazek_label(json_filepath):
+                id_value = extract_id_from_json(json_filepath)
+                if id_value:
+                    ids_to_process.append(id_value)
+                    logging.debug(f"Found 'Obrázek' label in {filename}, ID: {id_value}")
     else:
         # Get all IDs from JSON files
         logging.info("Getting all JSON IDs...")
-        json_files = [f for f in os.listdir(args.json_dir) if f.lower().endswith('.json')]
-        ids_to_process = []
-        for filename in json_files:
-            id_value = extract_id_from_json(os.path.join(args.json_dir, filename))
+        json_files = [f for f in os.listdir(json_dir) if f.lower().endswith('.json')]
+        
+        if show_progress:
+            try:
+                try:
+                    from tqdm.notebook import tqdm as notebook_tqdm
+                    files_iterator = notebook_tqdm(json_files, desc="Extracting IDs")
+                except ImportError:
+                    files_iterator = tqdm(json_files, desc="Extracting IDs")
+            except ImportError:
+                files_iterator = json_files
+        else:
+            files_iterator = json_files
+            
+        for filename in files_iterator:
+            id_value = extract_id_from_json(os.path.join(json_dir, filename))
             if id_value and id_value not in ids_to_process:
                 ids_to_process.append(id_value)
     
     if not ids_to_process:
-        logging.error("No valid IDs found to process. Exiting.")
-        return 1
+        error_msg = "No valid IDs found to process."
+        logging.error(error_msg)
+        return {"error": error_msg}
     
-    if args.max_ids > 0 and args.max_ids < len(ids_to_process):
-        logging.info(f"Limiting to {args.max_ids} IDs out of {len(ids_to_process)} total")
-        ids_to_process = ids_to_process[:args.max_ids]
+    if max_ids > 0 and max_ids < len(ids_to_process):
+        logging.info(f"Limiting to {max_ids} IDs out of {len(ids_to_process)} total")
+        ids_to_process = ids_to_process[:max_ids]
     
     logging.info(f"Found {len(ids_to_process)} IDs to process")
     
-    logging.info("=" * 60)
-    logging.info("STARTING PROCESSING")
-    logging.info("=" * 60)
-    logging.info(f"Configuration: threshold={args.similarity_threshold}, model={args.model_name}")
-    logging.info(f"Directories: json={args.json_dir}, images={args.images_dir}, texts={args.texts_dir}")
+    # Reduced logging here - removed separator lines
+    logging.info(f"Config: threshold={similarity_threshold}, model={model_name}")
 
     # Process each ID
     results = []
@@ -572,77 +659,174 @@ def main():
     
     total_start_time = time.time()
     
-    for idx, id_value in enumerate(tqdm(ids_to_process, desc="Processing IDs")):
-        logging.info(f"Processing ID {idx+1}/{len(ids_to_process)}: {id_value}")
+    # Set up progress tracking
+    if show_progress:
+        try:
+            # Try notebook tqdm first, fall back to regular tqdm
+            try:
+                from tqdm.notebook import tqdm as notebook_tqdm
+                id_iterator = notebook_tqdm(
+                    ids_to_process, 
+                    desc="Processing IDs", 
+                    unit="ID",
+                    leave=True
+                )
+                logging.debug("Using tqdm.notebook for main processing progress")
+            except ImportError:
+                # Fall back to regular tqdm
+                id_iterator = tqdm(
+                    ids_to_process, 
+                    desc="Processing IDs", 
+                    unit="ID",
+                    leave=True
+                )
+                logging.debug("Using regular tqdm for main processing progress")
+        except ImportError:
+            # If all fails, use regular list
+            id_iterator = ids_to_process
+            logging.warning("tqdm not available, progress bars disabled")
+    else:
+        id_iterator = ids_to_process
+        
+    for idx, id_value in enumerate(id_iterator):
+        # Removed duplicate logging - let the progress bar show this info
+        # Only keep debug level logging for individual ID processing
+        logging.debug(f"Processing ID {idx+1}/{len(ids_to_process)}: {id_value}")
         
         result = process_id(
             id_value=id_value,
             model=model,
             preprocess=preprocess,
             device=device,
-            args=args,  # Add this argument
-            images_dir=args.images_dir,
-            texts_dir=args.texts_dir,
-            similarity_threshold=args.similarity_threshold,
-            max_lines_context=args.max_lines_context,
-            max_image_suffix=args.max_image_suffix,
-            output_dir=args.output_dir
+            images_dir=images_dir,
+            texts_dir=texts_dir,
+            similarity_threshold=similarity_threshold,
+            max_lines_context=max_lines_context,
+            max_image_suffix=max_image_suffix,
+            output_dir=output_dir,
+            best_only=best_only,
+            verbose=verbose
         )
         
         results.append(result)
         
-        if result["success"]:
+        if result.get("success", False):
             successful_contexts += 1
         
         total_images_processed += result.get("images_processed", 0)
         total_images_below_threshold += result.get("images_below_threshold", 0)
         
-        if args.verbose:
-            logging.info(f"Detailed info for ID {id_value}: Found {len(available_images)} images")
-            for idx, img in enumerate(available_images):
-                logging.info(f"  Image {idx+1}: {os.path.basename(img)}")
+        # Update progress bar with additional info if using tqdm
+        if show_progress and ('tqdm' in str(type(id_iterator)) or 'notebook.tqdm' in str(type(id_iterator))):
+            success_rate = (successful_contexts/(idx+1))*100
+            id_iterator.set_postfix({
+                'success_rate': f"{success_rate:.1f}%",
+                'successful': successful_contexts,
+                'images': total_images_processed
+            })
         
-        print(f"Processed {idx+1}/{len(ids_to_process)} IDs, success rate: {(successful_contexts/(idx+1))*100:.1f}%")
+        # Remove verbose output - keep it only if debug is enabled
+        if verbose and logging.getLogger().level <= logging.DEBUG:
+            logging.debug(f"Detailed info for ID {id_value}")
+        
+        # Removed periodic logging here as it's redundant with progress bar
+    
+    # Make sure to close the progress bar if it's a tqdm instance
+    if show_progress and ('tqdm' in str(type(id_iterator)) or 'notebook.tqdm' in str(type(id_iterator))):
+        id_iterator.close()
     
     total_time = time.time() - total_start_time
     
-    # Summarize results
-    logging.info("=" * 60)
+    # Summarize results - but make it more concise
     logging.info("PROCESSING COMPLETE")
-    logging.info("=" * 60)
-    logging.info(f"Total IDs processed: {len(ids_to_process)}")
-    logging.info(f"Successful context images created: {successful_contexts}")
-    logging.info(f"Total images processed: {total_images_processed}")
-    logging.info(f"Images below threshold: {total_images_below_threshold}")
-    logging.info(f"Success rate: {(successful_contexts / len(ids_to_process)) * 100:.2f}%")
-    logging.info(f"Total processing time: {total_time:.2f} seconds")
-    logging.info(f"Average time per ID: {total_time / len(ids_to_process):.2f} seconds")
+    logging.info(f"Results: {successful_contexts}/{len(ids_to_process)} successful ({(successful_contexts / len(ids_to_process)) * 100:.1f}%)")
+    logging.info(f"Time: {total_time:.2f}s total, {total_time / len(ids_to_process):.2f}s per ID")
+    
+    # Create results dictionary
+    return_results = {
+        "summary": {
+            "total_ids": len(ids_to_process),
+            "successful_ids": successful_contexts,
+            "total_images_processed": total_images_processed,
+            "images_below_threshold": total_images_below_threshold,
+            "success_rate": (successful_contexts / len(ids_to_process)) * 100 if ids_to_process else 0,
+            "elapsed_time": total_time,
+            "average_time_per_id": total_time / len(ids_to_process) if ids_to_process else 0
+        },
+        "config": {
+            "model": model_name,
+            "device": device,
+            "similarity_threshold": similarity_threshold,
+            "max_lines_context": max_lines_context,
+            "process_all": process_all,
+            "best_only": best_only
+        },
+        "details": results
+    }
     
     # Write detailed results to a JSON file
-    results_file = "all_results.json" if args.all else "obrazek_results.json"
-    with open(results_file, "w", encoding="utf-8") as f:
-        json.dump({
-            "summary": {
-                "total_ids": len(ids_to_process),
-                "successful_ids": successful_contexts,
-                "total_images_processed": total_images_processed,
-                "images_below_threshold": total_images_below_threshold,
-                "success_rate": (successful_contexts / len(ids_to_process)) * 100 if ids_to_process else 0,
-                "elapsed_time": total_time,
-                "average_time_per_id": total_time / len(ids_to_process) if ids_to_process else 0
-            },
-            "config": {
-                "model": args.model_name,
-                "device": device,
-                "similarity_threshold": args.similarity_threshold,
-                "max_lines_context": args.max_lines_context
-            },
-            "details": results
-        }, f, indent=2)
+    results_file = os.path.join(output_dir, "processing_results.json")
+    try:
+        with open(results_file, "w", encoding="utf-8") as f:
+            json.dump(return_results, f, indent=2)
+        logging.debug(f"Detailed results saved to {results_file}")  # Changed to debug
+    except Exception as e:
+        logging.error(f"Error saving results to JSON: {e}")
     
-    logging.info(f"Detailed results saved to {results_file}")
+    return return_results
+
+def main():
+    """Main function for command-line execution"""
+    parser = argparse.ArgumentParser(
+        description=f"Process images with CLIP to find matching text descriptions (v{SCRIPT_VERSION})",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument("--json-dir", default=DEFAULT_JSON_DIR, help="Directory containing JSON files")
+    parser.add_argument("--images-dir", default=DEFAULT_IMAGES_DIR, help="Directory containing exported images")
+    parser.add_argument("--texts-dir", default=DEFAULT_TEXTS_DIR, help="Directory containing filtered XML texts")
+    parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Directory to store output context images")
+    parser.add_argument("--similarity-threshold", type=float, default=DEFAULT_SIMILARITY_THRESHOLD, help="Similarity threshold for context building")
+    parser.add_argument("--max-lines-context", type=int, default=DEFAULT_MAX_LINES_CONTEXT, help="Maximum lines to check above and below")
+    parser.add_argument("--max-image-suffix", type=int, default=DEFAULT_MAX_IMAGE_SUFFIX, help="Maximum suffix for alternative images")
+    parser.add_argument("--max-ids", type=int, default=0, help="Maximum number of IDs to process (0 for all)")
+    parser.add_argument("--model-name", default=DEFAULT_MODEL_NAME, help="CLIP model to use")
+    parser.add_argument("--all", action="store_true", 
+                        help="Process all IDs, not just ones with 'Obrázek' label")
+    parser.add_argument("--id", help="Process a single specific ID")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--verbose", action="store_true", help="Show more detailed output")
+    parser.add_argument("--best-only", action="store_true", 
+                        help="Only use the best matching context for each image instead of all above threshold")
+    parser.add_argument("--no-log-file", action="store_true", help="Disable logging to file")
     
-    return 0
+    args = parser.parse_args()
+    
+    # Set up logging for command-line use
+    setup_logging(args.debug, use_notebook=False, log_to_file=not args.no_log_file)
+    
+    # Run the main processing function
+    result = run_process_descriptions(
+        json_dir=args.json_dir,
+        images_dir=args.images_dir,
+        texts_dir=args.texts_dir,
+        output_dir=args.output_dir,
+        similarity_threshold=args.similarity_threshold,
+        max_lines_context=args.max_lines_context,
+        max_image_suffix=args.max_image_suffix,
+        max_ids=args.max_ids,
+        model_name=args.model_name,
+        process_all=args.all,
+        specific_id=args.id,
+        best_only=args.best_only,
+        verbose=args.verbose,
+        show_progress=True
+    )
+    
+    if "error" in result:
+        logging.critical(f"Processing failed: {result['error']}")
+        return 1
+    else:
+        return 0
 
 if __name__ == "__main__":
     sys.exit(main())

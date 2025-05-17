@@ -14,3 +14,11 @@ tmp/
 ukazka_page_xml.py
 
 */__pycache__/
+*/filtered_texts/
+*/output_context/
+*/filtered_jsons/
+*/filtered_images/
+*/splitted_jsons/
+*/downloaded_texts/
+*/cropped_images/
+*/filtered_texts_no_desc/
