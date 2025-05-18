@@ -432,7 +432,7 @@ def process_image_with_model(model, image_path, output_dir=None, create_visualiz
         model: Pre-initialized YOLO model
         image_path: Path to the image file
         output_dir: Directory to save results (defaults to same dir as image)
-        create_visualization: Whether to create and save visualization (default: True)
+        create_visualization: Whether to create and save visualization during processing
         
     Returns:
         Tuple of (results_dict, json_path, viz_path) where json_path is None if no "Obrázek" was found
@@ -447,15 +447,21 @@ def process_image_with_model(model, image_path, output_dir=None, create_visualiz
     if output_dir is None:
         # Use the same directory as the image
         base_path = os.path.splitext(image_path)[0]
+        parent_dir = os.path.dirname(image_path)
     else:
         # Use the specified output directory with the image filename
         os.makedirs(output_dir, exist_ok=True)
         base_name = os.path.basename(os.path.splitext(image_path)[0])
         base_path = os.path.join(output_dir, base_name)
+        parent_dir = os.path.dirname(output_dir)
+    
+    # Create visualization directory at the same level as output_dir
+    viz_dir = os.path.join(parent_dir, "visualizations")
+    os.makedirs(viz_dir, exist_ok=True)
     
     # Use just the ID as filename without the _matches suffix
     json_path = f"{base_path}.json"
-    viz_path = f"{base_path}_visualization.png" if create_visualization else None
+    viz_path = os.path.join(viz_dir, f"{os.path.basename(base_path)}.jpg")
     
     try:
         # Run detection
@@ -463,7 +469,7 @@ def process_image_with_model(model, image_path, output_dir=None, create_visualiz
         
         # Process the detection and get results
         if create_visualization:
-            results, actual_json_path, viz_path = process_detections(
+            results, actual_json_path, _ = process_detections(
                 detection=detection_result,
                 base_path=base_path,
                 image=image,
@@ -471,14 +477,19 @@ def process_image_with_model(model, image_path, output_dir=None, create_visualiz
                 viz_path=viz_path
             )
         else:
-            # When skipping visualization, we need to modify process_detections or call it differently
+            # When skipping visualization during processing
             results, actual_json_path, _ = process_detections(
                 detection=detection_result,
                 base_path=base_path,
                 image=image,
                 json_path=json_path,
-                viz_path=None
+                viz_path=None  # Skip visualization during processing
             )
+            
+            # But create visualization separately at the end if we have results
+            if results:
+                viz_path = create_visualization(image, results, viz_path)
+                print(f"Visualization created separately: {viz_path}")
         
         # Print summary
         if results:
