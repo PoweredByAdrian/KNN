@@ -647,43 +647,44 @@ def process_id(
     # After processing all images, visualize all accumulated context blocks on the original image
     output_file = None
     
-    if all_context_blocks:
-        # Get original image path (use the ID without any suffix)
-        original_image_path = os.path.join(original_images_dir, f"{id_value}.jpg")
+  
+    # Get original image path (use the ID without any suffix)
+    original_image_path = os.path.join(original_images_dir, f"{id_value}.jpg")
+    
+    # If original image doesn't exist, use the first available image we found earlier
+    if not os.path.exists(original_image_path):
+        original_image_path = available_images[0]
+        logging.debug(f"Original image not found at {original_image_path}, using {available_images[0]} instead")
+    
+    # Create output directories if they don't exist
+    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(output_jsons_dir, exist_ok=True)
+    
+    # Store original image path in JSON data
+    json_data["original_image_path"] = original_image_path
+    
+    # Visualize all context blocks on the image
+    try:
+        # Call the function without the output_name parameter
+        context_image = draw_blocks_on_image(original_image_path, all_context_blocks)
         
-        # If original image doesn't exist, use the first available image we found earlier
-        if not os.path.exists(original_image_path):
-            original_image_path = available_images[0]
-            logging.debug(f"Original image not found at {original_image_path}, using {available_images[0]} instead")
+        # Define output filename
+        output_file = f"{id_value}_all_contexts.jpg"
+        output_path = os.path.join(output_dir, output_file)
         
-        # Create output directories if they don't exist
-        os.makedirs(output_dir, exist_ok=True)
-        os.makedirs(output_jsons_dir, exist_ok=True)
-        
-        # Store original image path in JSON data
-        json_data["original_image_path"] = original_image_path
-        
-        # Visualize all context blocks on the image
-        try:
-            # Call the function without the output_name parameter
-            context_image = draw_blocks_on_image(original_image_path, all_context_blocks)
+        # Copy or move the generated image to the output directory
+        if os.path.exists(context_image):
+            shutil.copy(context_image, output_path)
+            logging.info(f"✓ Context visualization saved: {output_file}")  # Keep this as INFO but formatted better
             
-            # Define output filename
-            output_file = f"{id_value}_all_contexts.jpg"
-            output_path = os.path.join(output_dir, output_file)
-            
-            # Copy or move the generated image to the output directory
-            if os.path.exists(context_image):
-                shutil.copy(context_image, output_path)
-                logging.info(f"✓ Context visualization saved: {output_file}")  # Keep this as INFO but formatted better
-                
-                # Clean up original if it's not the final destination
-                if context_image != output_path and os.path.exists(context_image):
-                    os.remove(context_image)
-        except Exception as e:
-            logging.error(f"Error visualizing combined context blocks: {e}")
-            json_data["error"] = f"Error visualizing: {str(e)}"
-    else:
+            # Clean up original if it's not the final destination
+            if context_image != output_path and os.path.exists(context_image):
+                os.remove(context_image)
+    except Exception as e:
+        logging.error(f"Error visualizing combined context blocks: {e}")
+        json_data["error"] = f"Error visualizing: {str(e)}"
+    
+    if not all_context_blocks:
         logging.warning(f"No context blocks found for ID {id_value}")  # Keep warning but simplified
         json_data["error"] = "No context blocks found"
     
