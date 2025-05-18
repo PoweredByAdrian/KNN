@@ -16,7 +16,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
-
+from multilingual_clip import pt_multilingual_clip
+import transformers
 # --- Configuration ---
 SCRIPT_VERSION = "1.2"  # Updated version number
 DEFAULT_JSON_DIR = "jsons"
@@ -336,7 +337,9 @@ def find_top_matching_blocks(
     model,
     preprocess,
     top_k: int = 3,
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    device: str = "cuda" if torch.cuda.is_available() else "cpu",
+    text_model = None,
+    tokenizer = None
 ) -> Optional[Tuple[List[TextBlock], List[float], List[float], List[float], OCRDocument]]:
     """
     Given an image and OCR XML, returns the top k blocks whose text best matches the image
@@ -373,7 +376,11 @@ def find_top_matching_blocks(
     # 4. CLIP encodings - only calculate cosine similarities, not softmax
     with torch.no_grad():
         image_features = model.encode_image(image_input)
-        text_features = model.encode_text(text_tokens)
+        if(text_model != None):
+            text_features = text_model.forward(texts, tokenizer)
+        else:
+            text_features = model.encode_text(text_tokens)
+
 
         # Only calculate cosine similarities
         image_features_norm = F.normalize(image_features, dim=-1)
@@ -403,7 +410,9 @@ def process_id(
     top_k: int = 3,  # New parameter for top-k matches
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     best_only: bool = False,
-    verbose: bool = False
+    verbose: bool = False,
+    text_model = None,
+    tokenizer = None
 ) -> Dict[str, Any]:
     """
     Process a single ID with the pre-loaded CLIP model.
@@ -495,7 +504,9 @@ def process_id(
             model=model,
             preprocess=preprocess,
             top_k=top_k,
-            device=device
+            device=device,
+            text_model=text_model,
+            tokenizer=tokenizer
         )
 
         if result is None:
@@ -748,7 +759,17 @@ def run_process_descriptions(
     try:
         logging.info(f"Loading CLIP model: {model_name}")
         model_load_start = time.time()
-        model, preprocess = clip.load(model_name, device=device)
+        if(model_name == "M-CLIP"):
+            model, preprocess = clip.load("ViT-L/14", device=device)
+            text_model = pt_multilingual_clip.MultilingualCLIP.from_pretrained("M-CLIP/XLM-Roberta-Large-Vit-L-14")
+            tokenizer = transformers.AutoTokenizer.from_pretrained("M-CLIP/XLM-Roberta-Large-Vit-L-14")
+            # model, preprocess = clip.load(model_name, device=device)
+            # text_model = None
+            # tokenizer = None
+        else:
+            model, preprocess = clip.load(model_name, device=device)
+            text_model = None
+            tokenizer = None
         model_load_time = time.time() - model_load_start
         logging.info(f"Model loaded in {model_load_time:.2f} seconds")
     except Exception as e:
@@ -891,7 +912,9 @@ def run_process_descriptions(
             max_image_suffix=max_image_suffix,
             top_k=top_k,  # Add the top_k parameter
             best_only=best_only,
-            verbose=verbose
+            verbose=verbose,
+            text_model=text_model,
+            tokenizer=tokenizer
         )
         
         results.append(result)
