@@ -22,3 +22,10 @@ ukazka_page_xml.py
 */downloaded_texts/
 */cropped_images/
 */filtered_texts_no_desc/
+*/output_jsons/
+*/filtered_description_jsons/
+*/bbox_comparisons/
+*/YOLO/
+*.pt
+*/pipeline/
+CLIP/label_studio_export.json
