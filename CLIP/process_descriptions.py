@@ -330,6 +330,64 @@ def find_best_matching_block(
     # but it will contain the same similarities, not softmax probabilities
     return blocks[best_idx], best_similarity, similarities, similarities, doc
 
+def find_top_matching_blocks(
+    image_path: str,
+    xml_path: str,
+    model,
+    preprocess,
+    top_k: int = 3,
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+) -> Optional[Tuple[List[TextBlock], List[float], List[float], List[float], OCRDocument]]:
+    """
+    Given an image and OCR XML, returns the top k blocks whose text best matches the image
+    based on cosine similarity.
+    """
+    # Check if files exist
+    if not os.path.exists(image_path):
+        logging.error(f"Image file not found: {image_path}")
+        return None
+        
+    if not os.path.exists(xml_path):
+        logging.error(f"XML file not found: {xml_path}")
+        return None
+
+    # 1. Load OCR blocks
+    doc = OCRDocument(xml_path)
+    blocks = doc.generate_blocks(lines_per_block=1, overlap=0)
+    if not blocks:
+        logging.warning(f"No text blocks found in {xml_path}")
+        return None
+
+    # 2. Preprocess image
+    try:
+        image = Image.open(image_path).convert("RGB")
+        image_input = preprocess(image).unsqueeze(0).to(device)
+    except Exception as e:
+        logging.error(f"Error processing image {image_path}: {e}")
+        return None
+
+    # 3. Tokenize block texts
+    texts = [block.get_text() for block in blocks]
+    text_tokens = clip.tokenize(texts, truncate=True).to(device)
+
+    # 4. CLIP encodings - only calculate cosine similarities, not softmax
+    with torch.no_grad():
+        image_features = model.encode_image(image_input)
+        text_features = model.encode_text(text_tokens)
+
+        # Only calculate cosine similarities
+        image_features_norm = F.normalize(image_features, dim=-1)
+        text_features_norm = F.normalize(text_features, dim=-1)
+        similarities = torch.matmul(image_features_norm, text_features_norm.T)[0].cpu().tolist()
+
+    # Find top-k matches based on cosine similarity
+    top_k = min(top_k, len(blocks))  # Ensure we don't request more blocks than available
+    top_indices = torch.topk(torch.tensor(similarities), k=top_k).indices.tolist()
+    top_blocks = [blocks[idx] for idx in top_indices]
+    top_similarities = [similarities[idx] for idx in top_indices]
+
+    return top_blocks, top_similarities, similarities, similarities, doc
+
 def process_id(
     id_value: str, 
     model, 
@@ -338,10 +396,11 @@ def process_id(
     texts_dir: str = DEFAULT_TEXTS_DIR,
     original_images_dir: str = DEFAULT_ORIGINAL_IMAGES_DIR,
     output_dir: str = DEFAULT_OUTPUT_DIR,
-    output_jsons_dir: str = DEFAULT_OUTPUT_JSONS_DIR,  # Added parameter
+    output_jsons_dir: str = DEFAULT_OUTPUT_JSONS_DIR,
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     max_lines_context: int = DEFAULT_MAX_LINES_CONTEXT,
     max_image_suffix: int = DEFAULT_MAX_IMAGE_SUFFIX,
+    top_k: int = 3,  # New parameter for top-k matches
     device: str = "cuda" if torch.cuda.is_available() else "cpu",
     best_only: bool = False,
     verbose: bool = False
@@ -361,6 +420,7 @@ def process_id(
         similarity_threshold: Minimum similarity to consider for matches
         max_lines_context: Number of lines to include above/below matches
         max_image_suffix: Maximum suffix to check for image variants
+        top_k: Number of top matching blocks to return
         device: Device to use (cuda or cpu)
         best_only: Whether to use only the best match
         verbose: Enable more detailed output
@@ -424,16 +484,17 @@ def process_id(
         # Initialize image data in JSON
         json_data["images"][image_id_with_suffix] = {
             "image_path": image_path,
-            "best_similarity": None,
+            "top_similarities": None,
             "blocks": []
         }
         
-        # Find best matching block for this image
-        result = find_best_matching_block(
+        # Find top matching blocks for this image
+        result = find_top_matching_blocks(
             image_path=image_path,
             xml_path=xml_path,
             model=model,
             preprocess=preprocess,
+            top_k=top_k,
             device=device
         )
 
@@ -442,44 +503,53 @@ def process_id(
             json_data["images"][image_id_with_suffix]["error"] = "Processing error"
             continue
         
-        # Now the result contains best_block, best_similarity, all_similarities, _, doc
-        best_block, best_similarity, all_similarities, _, doc = result
+        # Now the result contains top_blocks, top_similarities, all_similarities, _, doc
+        top_blocks, top_similarities, all_similarities, _, doc = result
         
-        # Store best similarity in JSON data
-        json_data["images"][image_id_with_suffix]["best_similarity"] = float(best_similarity)
+        # Store top similarities in JSON data
+        json_data["images"][image_id_with_suffix]["top_similarities"] = [float(sim) for sim in top_similarities]
         
-        # Moved to debug level
-        logging.debug(f"Matched block with {best_similarity:.4f} cosine similarity: \"{best_block.get_text()[:100]}...\"")
+        # Log top matches
+        for i, (block, similarity) in enumerate(zip(top_blocks, top_similarities)):
+            logging.debug(f"Top match #{i+1} with {similarity:.4f} similarity: \"{block.get_text()[:100]}...\"")
 
-        # Build contextual block around the best matching text
-        logging.debug("Building context block around best match...")  # Changed to debug
+        # Build contextual blocks around the top matching texts
+        logging.debug("Building context blocks around top matches...")
 
         # Instead of just building context around the best match,
-        # build context based on the selected approach (all above threshold or best only)
+        # build context based on the selected approach
         above_threshold_blocks = []
         
         # Find blocks to include based on chosen approach
         if best_only:
             # Only use the best match for this image (if it's above threshold)
+            # We need to find the index of the best match from all_similarities
             best_idx = int(torch.tensor(all_similarities).argmax())
             if all_similarities[best_idx] > similarity_threshold:
                 above_threshold_blocks = [best_idx]
-                logging.debug(f"Using best match only (similarity: {all_similarities[best_idx]:.4f})") # Changed to debug
+                logging.debug(f"Using best match only (similarity: {all_similarities[best_idx]:.4f})")
             else:
-                logging.debug(f"Best match similarity ({all_similarities[best_idx]:.4f}) below threshold ({similarity_threshold})") # Changed to debug
+                logging.debug(f"Best match similarity ({all_similarities[best_idx]:.4f}) below threshold ({similarity_threshold})")
                 images_below_threshold += 1
         else:
-            # Use all blocks above threshold (original behavior)
-            for idx, similarity in enumerate(all_similarities):
+            # Use all blocks above threshold (now including our top-k matches)
+            blocks = doc.generate_blocks(lines_per_block=1, overlap=0)
+            
+            # Get the indices of the top-k blocks
+            top_k_indices = torch.topk(torch.tensor(all_similarities), k=min(top_k, len(all_similarities))).indices.tolist()
+            
+            # First add the top-k matches that are above threshold
+            for i, idx in enumerate(top_k_indices):
+                similarity = all_similarities[idx]
                 if similarity > similarity_threshold:
                     above_threshold_blocks.append(idx)
+                    logging.debug(f"Adding top match #{i+1} (similarity: {similarity:.4f})")
             
-            if above_threshold_blocks:
-                logging.debug(f"Found {len(above_threshold_blocks)} blocks above threshold {similarity_threshold}") # Changed to debug
-            else:
-                logging.debug(f"No blocks above threshold {similarity_threshold} found") # Changed to debug
+            # If no top matches are above threshold
+            if not above_threshold_blocks:
+                logging.debug(f"No blocks above threshold {similarity_threshold} found")
                 images_below_threshold += 1
-        
+            
         if above_threshold_blocks:
             # We'll reuse the blocks generated earlier
             blocks = doc.generate_blocks(lines_per_block=1, overlap=0)
@@ -553,11 +623,11 @@ def process_id(
                 all_context_blocks.extend(context_blocks)
             
             if best_only:
-                logging.debug(f"Built context around best match with {len(all_context_blocks)} total blocks") # Changed to debug
+                logging.debug(f"Built context around best match with {len(all_context_blocks)} total blocks")
             else:
-                logging.debug(f"Built context blocks around {len(above_threshold_blocks)} matches above threshold") # Changed to debug
+                logging.debug(f"Built context blocks around {len(above_threshold_blocks)} matches above threshold")
             
-            logging.debug(f"Total blocks added to context: {len(all_context_blocks)}") # Changed to debug
+            logging.debug(f"Total blocks added to context: {len(all_context_blocks)}")
             
             if verbose and logging.getLogger().level <= logging.DEBUG:  # Only show details if we're in debug mode
                 for idx in above_threshold_blocks:
@@ -650,7 +720,7 @@ def run_process_descriptions(
     texts_dir: str = DEFAULT_TEXTS_DIR,
     original_images_dir: str = DEFAULT_ORIGINAL_IMAGES_DIR,
     output_dir: str = DEFAULT_OUTPUT_DIR,
-    output_jsons_dir: str = DEFAULT_OUTPUT_JSONS_DIR,  # Added parameter
+    output_jsons_dir: str = DEFAULT_OUTPUT_JSONS_DIR,
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
     max_lines_context: int = DEFAULT_MAX_LINES_CONTEXT,
     max_image_suffix: int = DEFAULT_MAX_IMAGE_SUFFIX,
@@ -659,6 +729,7 @@ def run_process_descriptions(
     process_all: bool = False,
     specific_id: str = None,
     best_only: bool = False,
+    top_k: int = 3,  # New parameter for top-k matches
     verbose: bool = False,
     show_progress: bool = True
 ) -> Dict[str, Any]:
@@ -814,10 +885,11 @@ def run_process_descriptions(
             texts_dir=texts_dir,
             original_images_dir=original_images_dir,
             output_dir=output_dir,
-            output_jsons_dir=output_jsons_dir,  # Pass the new parameter
+            output_jsons_dir=output_jsons_dir,
             similarity_threshold=similarity_threshold,
             max_lines_context=max_lines_context,
             max_image_suffix=max_image_suffix,
+            top_k=top_k,  # Add the top_k parameter
             best_only=best_only,
             verbose=verbose
         )
@@ -919,6 +991,7 @@ def main():
     parser.add_argument("--best-only", action="store_true", 
                         help="Only use the best matching context for each image instead of all above threshold")
     parser.add_argument("--no-log-file", action="store_true", help="Disable logging to file")
+    parser.add_argument("--top-k", type=int, default=3, help="Number of top matching blocks to find")
     
     args = parser.parse_args()
     
@@ -942,7 +1015,8 @@ def main():
         specific_id=args.id,
         best_only=args.best_only,
         verbose=args.verbose,
-        show_progress=True
+        show_progress=True,
+        top_k=args.top_k  # Add the top_k parameter
     )
     
     if "error" in result:
