@@ -91,6 +91,7 @@ def process_image_directory(
             # Process detection
             results, json_output, viz_output = process_detections(
                 detection=detection_result,
+                base_path=img_path,
                 image=image,
                 json_path=json_path,
                 viz_path=viz_path
