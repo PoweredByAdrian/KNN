@@ -762,7 +762,7 @@ def run_process_descriptions(
         model_load_start = time.time()
         if(model_name == "M-CLIP"):
             model, preprocess = clip.load("ViT-L/14", device=device)
-            text_model = pt_multilingual_clip.MultilingualCLIP.from_pretrained("M-CLIP/XLM-Roberta-Large-Vit-L-14")
+            text_model = pt_multilingual_clip.MultilingualCLIP.from_pretrained("M-CLIP/XLM-Roberta-Large-Vit-L-14").to(device)
             tokenizer = transformers.AutoTokenizer.from_pretrained("M-CLIP/XLM-Roberta-Large-Vit-L-14")
             # model, preprocess = clip.load(model_name, device=device)
             # text_model = None
